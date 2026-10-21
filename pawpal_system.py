@@ -1,33 +1,50 @@
+from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 
 @dataclass
 class Task:
     description: str
-    time: datetime
-    frequency: str = "once"  # "once", "daily"
+    time: str  # "HH:MM"
+    pet_name: str
+    frequency: Optional[str] = None  # None, "daily", "weekly"
     completed: bool = False
 
     def mark_complete(self) -> Optional["Task"]:
-        """Mark this task as complete. Return new task if recurring."""
+        """Mark this task as complete and, if recurring, return the next occurrence."""
         self.completed = True
-        if self.frequency.lower() == "daily":
-            new_time = self.time + timedelta(days=1)
-            return Task(
-                description=self.description,
-                time=new_time,
-                frequency=self.frequency,
-                completed=False,
-            )
-        return None
+
+        if self.frequency is None:
+            return None
+
+        # Parse current time as today + HH:MM
+        now = datetime.now()
+        hour, minute = map(int, self.time.split(":"))
+        current_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+        if self.frequency == "daily":
+            next_dt = current_dt + timedelta(days=1)
+        elif self.frequency == "weekly":
+            next_dt = current_dt + timedelta(weeks=1)
+        else:
+            return None
+
+        next_time = next_dt.strftime("%H:%M")
+        return Task(
+            description=self.description,
+            time=next_time,
+            pet_name=self.pet_name,
+            frequency=self.frequency,
+            completed=False,
+        )
 
 
 @dataclass
 class Pet:
     name: str
-    species: str
+    species: Optional[str] = None
     tasks: List[Task] = field(default_factory=list)
 
     def add_task(self, task: Task) -> None:
@@ -39,68 +56,71 @@ class Pet:
         return self.tasks
 
 
-@dataclass
 class Owner:
-    name: str
-    pets: List[Pet] = field(default_factory=list)
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.pets: Dict[str, Pet] = {}
 
     def add_pet(self, pet: Pet) -> None:
-        """Add a pet to this owner."""
-        self.pets.append(pet)
+        """Register a new pet under this owner."""
+        self.pets[pet.name] = pet
+
+    def get_pet(self, name: str) -> Optional[Pet]:
+        """Retrieve a pet by name."""
+        return self.pets.get(name)
 
     def get_all_tasks(self) -> List[Task]:
         """Return all tasks across all pets."""
-        all_tasks: List[Task] = []
-        for pet in self.pets:
-            all_tasks.extend(pet.tasks)
-        return all_tasks
+        tasks: List[Task] = []
+        for pet in self.pets.values():
+            tasks.extend(pet.get_tasks())
+        return tasks
 
 
 class Scheduler:
-    def __init__(self, owner: Owner):
-        """Initialize scheduler with an owner."""
+    def __init__(self, owner: Owner) -> None:
         self.owner = owner
 
-    def get_today_tasks(self) -> List[Task]:
-        """Return tasks scheduled for today."""
-        today = datetime.now().date()
-        return [
-            task for task in self.owner.get_all_tasks()
-            if task.time.date() == today
-        ]
-
-    def sort_by_time(self, tasks: Optional[List[Task]] = None) -> List[Task]:
-        """Return tasks sorted by time."""
-        if tasks is None:
-            tasks = self.owner.get_all_tasks()
+    def sort_by_time(self) -> List[Task]:
+        """Return all tasks sorted by time."""
+        tasks = self.owner.get_all_tasks()
         return sorted(tasks, key=lambda t: t.time)
 
-    def filter_by_pet(self, pet_name: str) -> List[Task]:
-        """Return tasks for a specific pet."""
-        for pet in self.owner.pets:
-            if pet.name == pet_name:
-                return pet.get_tasks()
-        return []
+    def filter_tasks(
+        self,
+        pet_name: Optional[str] = None,
+        completed: Optional[bool] = None,
+    ) -> List[Task]:
+        """Filter tasks by pet name and/or completion status."""
+        tasks = self.owner.get_all_tasks()
+        result: List[Task] = []
 
-    def filter_by_status(self, completed: bool) -> List[Task]:
-        """Return tasks filtered by completion status."""
-        return [
-            task for task in self.owner.get_all_tasks()
-            if task.completed == completed
-        ]
-
-    def detect_conflicts(self, tasks: Optional[List[Task]] = None) -> List[str]:
-        """Detect tasks with the exact same time."""
-        if tasks is None:
-            tasks = self.owner.get_all_tasks()
-        conflicts = []
-        seen = {}
         for task in tasks:
-            key = task.time
-            if key in seen:
-                conflicts.append(
-                    f"Conflict: '{task.description}' and '{seen[key].description}' at {task.time}"
-                )
-            else:
-                seen[key] = task
+            if pet_name is not None and task.pet_name != pet_name:
+                continue
+            if completed is not None and task.completed != completed:
+                continue
+            result.append(task)
+
+        return result
+
+    def detect_conflicts(self) -> List[List[Task]]:
+        """
+        Detect conflicts where two or more tasks share the same time.
+        Returns a list of lists, each inner list being conflicting tasks.
+        """
+        tasks = self.owner.get_all_tasks()
+        by_time: Dict[str, List[Task]] = {}
+
+        for task in tasks:
+            by_time.setdefault(task.time, []).append(task)
+
+        conflicts = [group for group in by_time.values() if len(group) > 1]
         return conflicts
+
+    def mark_task_complete(self, task: Task) -> Optional[Task]:
+        """
+        Mark a task complete and, if recurring, return the new task instance.
+        Caller is responsible for adding the new task to the appropriate pet.
+        """
+        return task.mark_complete()
